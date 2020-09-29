@@ -118,7 +118,7 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   static const string hasCD = "cmd /c cd \"";
   if (command.substr(0, hasCD.size()) == hasCD) {
     auto endCD = command.find("\" && ", hasCD.size());
-    if (endCD == string::npos) {
+    if (endCD != string::npos) {
       chdir = _fullpath(NULL /*_fullpath will malloc*/,
                         command.substr(hasCD.size(), endCD - hasCD.size())
                                .c_str(),
@@ -130,6 +130,43 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
       }
       updatedCommand = command.substr(endCD + 5);
       pcommand = updatedCommand.c_str();
+
+      // The working directory must also apply to the command executable
+      // itself. However it could also be an absolute command path or a command
+      // living inside the "PATH" environment variable. For that reason we
+      // first check whether the file would exist, IF it was interpreted as a
+      // relative command name relative to the (new) current directory. If this
+      // file exists we manually prepend the new current directory also to the
+      // executable name. Note that this should match the behaviour of
+      // "CreateProcessA" because this function also checks the current
+      // directory first according to the Microsoft documentation on
+      // "CreateProcessA".
+      std::string commandExecutableName, commandArguments;
+      if (!updatedCommand.empty() && updatedCommand[0] == '\"') {
+        size_t nextQuotationMarks = updatedCommand.find('\"', 1);
+        if (nextQuotationMarks != string::npos) {
+          commandExecutableName =
+              updatedCommand.substr(1, nextQuotationMarks - 1);
+          commandArguments = updatedCommand.substr(nextQuotationMarks + 1);
+        }
+      } else {
+        size_t nextSpace = updatedCommand.find(' ', 0);
+        if (nextSpace != string::npos) {
+          commandExecutableName = updatedCommand.substr(0, nextSpace);
+          commandArguments = updatedCommand.substr(nextSpace);
+        }
+      }
+      if (!commandExecutableName.empty()) {
+        std::string relativeExecutableName = chdir + commandExecutableName;
+        DWORD attrib = GetFileAttributesA(relativeExecutableName.c_str());
+        if (attrib != INVALID_FILE_ATTRIBUTES &&
+            !(attrib & FILE_ATTRIBUTE_DIRECTORY)) {
+          // Use "chdir"-relative executable.
+          updatedCommand = 
+            "\"" + relativeExecutableName + "\"" + commandArguments;
+          pcommand = updatedCommand.c_str();
+        }
+      }
     }
   }
   // CreateProcessA() here may have chdir == NULL.
